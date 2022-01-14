@@ -29,10 +29,18 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    match args.remote_ip {
-        Some(remote_ip) => send(remote_ip.parse()?, args.port, args.interval).await,
-        None => receive(args.port).await
+    //match args.remote_ip {
+    //    Some(remote_ip) => send(remote_ip.parse()?, args.port, args.interval).await,
+    //    None => receive(args.port).await
+    //}
+
+    if let Some(remote_ip) = args.remote_ip {
+        tokio::spawn(async move {
+            send(remote_ip.parse()?, args.port, args.interval).await
+        });
     }
+
+    receive(args.port).await
 }
 
 async fn send(remote_ip: Ipv4Addr, port: u16, interval: f64) -> Result<()> {
