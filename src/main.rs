@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use nix::time::{clock_gettime, ClockId};
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -8,6 +8,7 @@ use tokio::{
 };
 
 const PAYLOAD_SIZE: usize = 16;
+const REFLECTED_PAYLOAD_SIZE: usize = 32;
 const NANOSECONDS_IN_SECOND: i128 = 1000000000;
 
 /// UDP-based naive clock offset measurement tool
@@ -25,22 +26,45 @@ struct Args {
     interval: f64
 }
 
+fn time_realtime() -> Result<(i64, i64)> {
+    let time = clock_gettime(ClockId::CLOCK_REALTIME).context("clock_gettime() call failed")?;
+    Ok((time.tv_sec(), time.tv_nsec()))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    //match args.remote_ip {
-    //    Some(remote_ip) => send(remote_ip.parse()?, args.port, args.interval).await,
-    //    None => receive(args.port).await
-    //}
-
     if let Some(remote_ip) = args.remote_ip {
-        tokio::spawn(async move {
-            send(remote_ip.parse()?, args.port, args.interval).await
-        });
+        generate(SocketAddrV4::new(remote_ip.parse()?, args.port), args.interval).await
+    } else {
+        reflect(args.port).await
+    }
+}
+
+async fn reflect(port: u16) -> Result<()> {
+    let sockaddr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port);
+    eprintln!("Reflecting packets on {}...", sockaddr);
+
+    let socket = UdpSocket::bind(sockaddr).await?;
+    let mut buf = [0; 2048];  // should be enough for MTU 1500
+    loop {
+        let (len, addr) = socket.recv_from(&mut buf).await?;
+        if len != PAYLOAD_SIZE {
+            eprintln!("Invalid packet discarded: payload size {} != {}", len, PAYLOAD_SIZE);
+            continue;
+        }
+
+        let (sec, nsec) = time_realtime()?;
+        let reply = [&buf[..PAYLOAD_SIZE], &sec.to_le_bytes(), &nsec.to_le_bytes()].concat();
+        socket.send_to(&reply, &addr).await?;
     }
 
-    receive(args.port).await
+    Ok(())
+}
+
+async fn generate(remote: SocketAddrV4, interval: f64) -> Result<()> {
+    Ok(())
 }
 
 async fn send(remote_ip: Ipv4Addr, port: u16, interval: f64) -> Result<()> {
