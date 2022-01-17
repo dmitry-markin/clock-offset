@@ -12,7 +12,6 @@ use tokio::{
 
 const PAYLOAD_SIZE: usize = 16;
 const REFLECTED_PAYLOAD_SIZE: usize = 32;
-const NANOSECONDS_IN_SECOND: i128 = 1000000000;
 
 /// UDP-based naive clock offset measurement tool
 #[derive(Parser, Debug)]
@@ -51,6 +50,7 @@ async fn reflect(port: u16) -> Result<()> {
 
     let socket = UdpSocket::bind(sockaddr).await?;
     let mut buf = [0; 2048];  // should be enough for MTU 1500
+
     loop {
         let (len, addr) = socket.recv_from(&mut buf).await?;
         if len != PAYLOAD_SIZE {
@@ -62,8 +62,6 @@ async fn reflect(port: u16) -> Result<()> {
         let reply = [&buf[..PAYLOAD_SIZE], &sec.to_le_bytes(), &nsec.to_le_bytes()].concat();
         socket.send_to(&reply, &addr).await?;
     }
-
-    Ok(())
 }
 
 async fn measure(remote: SocketAddrV4, interval: f64) -> Result<()> {
@@ -82,12 +80,55 @@ async fn measure(remote: SocketAddrV4, interval: f64) -> Result<()> {
 }
 
 async fn receive(socket: Arc<UdpSocket>) -> Result<()> {
+    println!("t1, tau2, t3, offset_min, offset_max, offset");
+
+    let mut buf = [0; 2048];
+
     loop {
+        let len = socket.recv(&mut buf).await?;
+        if len != REFLECTED_PAYLOAD_SIZE {
+            eprintln!(
+                "Invalid packet discarded: payload size {} != {}",
+                len,
+                REFLECTED_PAYLOAD_SIZE
+            );
+            continue;
+        }
 
+        let (sec3, nsec3) = time_realtime()?;
+        let sec1 = i64::from_le_bytes(buf[..8].try_into()?);
+        let nsec1 = i64::from_le_bytes(buf[8..16].try_into()?);
+        let sec2 = i64::from_le_bytes(buf[16..24].try_into()?);
+        let nsec2 = i64::from_le_bytes(buf[24..32].try_into()?);
 
+        let t1 = total_nsec(sec1, nsec1);
+        let tau2 = total_nsec(sec2, nsec2);  // reference time
+        let t3 = total_nsec(sec3, nsec3);
+
+        let offset_min = t1 - tau2;
+        let offset_max = t3 - tau2;
+        let offset = (t1 + t3) / 2 - tau2;
+
+        println!(
+            "{}.{:09}, {}.{:09}, {}.{:09}, {:.9}, {:.9}, {:.9}",
+            sec1, nsec1,
+            sec2, nsec2,
+            sec3, nsec3,
+            nsec_to_sec(offset_min),
+            nsec_to_sec(offset_max),
+            nsec_to_sec(offset)
+        );
     }
+}
 
-    Ok(())
+fn total_nsec(sec: i64, nsec: i64) -> i128 {
+    const NANOSECONDS_IN_SECOND: i128 = 1000000000;
+
+    sec as i128 * NANOSECONDS_IN_SECOND + nsec as i128
+}
+
+fn nsec_to_sec(nsec: i128) -> f64 {
+    nsec as f64 * 1e-9
 }
 
 async fn send(socket: Arc<UdpSocket>, interval: Duration) -> Result<()> {
@@ -101,30 +142,3 @@ async fn send(socket: Arc<UdpSocket>, interval: Duration) -> Result<()> {
         sleep(interval).await;
     }
 }
-
-//async fn receive(port: u16) -> Result<()> {
-//    eprintln!("Listening for timestamps on port {}...", port);
-//
-//    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
-//    let mut buf = [0; 1024];
-//    loop {
-//        let (len, _addr) = socket.recv_from(&mut buf).await?;
-//        if len != PAYLOAD_SIZE {
-//            eprintln!("Invalid packet: payload size {} != {}", len, PAYLOAD_SIZE);
-//            continue;
-//        }
-//
-//        let received = clock_gettime(ClockId::CLOCK_REALTIME)?;
-//        let received_sec = received.tv_sec();
-//        let received_nsec = received.tv_nsec();
-//        let received_total = received_sec as i128 * NANOSECONDS_IN_SECOND + received_nsec as i128;
-//
-//        let sent_sec = i64::from_le_bytes(buf[..8].try_into()?);
-//        let sent_nsec = i64::from_le_bytes(buf[8..16].try_into()?);
-//        let sent_total: i128 = sent_sec as i128 * NANOSECONDS_IN_SECOND + sent_nsec as i128;
-//
-//        let offset = (received_total - sent_total) as f64 / 1e9;
-//
-//        println!("{}.{:09}, {}.{:09}, {:.9}", sent_sec, sent_nsec, received_sec, received_nsec, offset);
-//    }
-//}
