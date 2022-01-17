@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use nix::time::{clock_gettime, ClockId};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::{
+    sync::Arc,
+    net::{Ipv4Addr, SocketAddrV4}
+};
 use tokio::{
     net::UdpSocket,
     time::{sleep, Duration}
@@ -36,7 +39,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     if let Some(remote_ip) = args.remote_ip {
-        generate(SocketAddrV4::new(remote_ip.parse()?, args.port), args.interval).await
+        measure(SocketAddrV4::new(remote_ip.parse()?, args.port), args.interval).await
     } else {
         reflect(args.port).await
     }
@@ -63,53 +66,65 @@ async fn reflect(port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn generate(remote: SocketAddrV4, interval: f64) -> Result<()> {
+async fn measure(remote: SocketAddrV4, interval: f64) -> Result<()> {
+    eprintln!("Sending timestamps to {} every {} seconds...", remote, interval);
+
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    socket.connect(remote).await?;
+    let socket_receive = Arc::new(socket);
+    let socket_send = socket_receive.clone();
+
+    tokio::spawn(async move {
+        receive(socket_receive).await
+    });
+
+    send(socket_send, Duration::from_secs_f64(interval)).await
+}
+
+async fn receive(socket: Arc<UdpSocket>) -> Result<()> {
+    loop {
+
+
+    }
+
     Ok(())
 }
 
-async fn send(remote_ip: Ipv4Addr, port: u16, interval: f64) -> Result<()> {
-    let sockaddr = SocketAddrV4::new(remote_ip, port);
-    eprintln!("Sending timestamps to {} every {} seconds...", sockaddr, interval);
-
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
-    socket.connect(sockaddr).await?;
-
+async fn send(socket: Arc<UdpSocket>, interval: Duration) -> Result<()> {
     loop {
-        let time = clock_gettime(ClockId::CLOCK_REALTIME)?;
-        let sec: i64 = time.tv_sec();
-        let nsec: i64 = time.tv_nsec();
+        let (sec, nsec) = time_realtime()?;
         let payload = [sec.to_le_bytes(), nsec.to_le_bytes()].concat();
         assert_eq!(payload.len(), PAYLOAD_SIZE);
 
         socket.send(&payload[..]).await?;
 
-        sleep(Duration::from_secs_f64(interval)).await;
+        sleep(interval).await;
     }
 }
 
-async fn receive(port: u16) -> Result<()> {
-    eprintln!("Listening for timestamps on port {}...", port);
-
-    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
-    let mut buf = [0; 1024];
-    loop {
-        let (len, _addr) = socket.recv_from(&mut buf).await?;
-        if len != PAYLOAD_SIZE {
-            eprintln!("Invalid packet: payload size {} != {}", len, PAYLOAD_SIZE);
-            continue;
-        }
-
-        let received = clock_gettime(ClockId::CLOCK_REALTIME)?;
-        let received_sec = received.tv_sec();
-        let received_nsec = received.tv_nsec();
-        let received_total = received_sec as i128 * NANOSECONDS_IN_SECOND + received_nsec as i128;
-
-        let sent_sec = i64::from_le_bytes(buf[..8].try_into()?);
-        let sent_nsec = i64::from_le_bytes(buf[8..16].try_into()?);
-        let sent_total: i128 = sent_sec as i128 * NANOSECONDS_IN_SECOND + sent_nsec as i128;
-
-        let offset = (received_total - sent_total) as f64 / 1e9;
-
-        println!("{}.{:09}, {}.{:09}, {:.9}", sent_sec, sent_nsec, received_sec, received_nsec, offset);
-    }
-}
+//async fn receive(port: u16) -> Result<()> {
+//    eprintln!("Listening for timestamps on port {}...", port);
+//
+//    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
+//    let mut buf = [0; 1024];
+//    loop {
+//        let (len, _addr) = socket.recv_from(&mut buf).await?;
+//        if len != PAYLOAD_SIZE {
+//            eprintln!("Invalid packet: payload size {} != {}", len, PAYLOAD_SIZE);
+//            continue;
+//        }
+//
+//        let received = clock_gettime(ClockId::CLOCK_REALTIME)?;
+//        let received_sec = received.tv_sec();
+//        let received_nsec = received.tv_nsec();
+//        let received_total = received_sec as i128 * NANOSECONDS_IN_SECOND + received_nsec as i128;
+//
+//        let sent_sec = i64::from_le_bytes(buf[..8].try_into()?);
+//        let sent_nsec = i64::from_le_bytes(buf[8..16].try_into()?);
+//        let sent_total: i128 = sent_sec as i128 * NANOSECONDS_IN_SECOND + sent_nsec as i128;
+//
+//        let offset = (received_total - sent_total) as f64 / 1e9;
+//
+//        println!("{}.{:09}, {}.{:09}, {:.9}", sent_sec, sent_nsec, received_sec, received_nsec, offset);
+//    }
+//}
